@@ -1,0 +1,84 @@
+pipeline {
+    agent any
+    
+    tools {
+        maven 'maven3'
+    }
+    
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+    }
+
+    stages {
+        stage('Git checkout') {
+            steps {
+                git credentialsId: 'git-token', url: 'https://github.com/sunilrsonar/3-Tier-Java-Mysql.git'
+            }
+        }
+        stage('compile') {
+            steps {
+                sh 'mvn compile'
+            }
+        }
+        stage('git leaks') {
+            steps {
+                sh 'gitleaks detect --source . -r gitleaks_repost.json'
+            }
+        }
+        stage('trivy scan') {
+            steps {
+                sh 'trivy fs --format table -o trivy_fs.html .'
+            }
+        }
+        stage('test') {
+            steps {
+                sh 'mvn test'
+            }
+        }
+        stage('sonarqube scanner') {
+            steps {
+                withSonarQubeEnv('sonar') {
+                    sh '''$SCANNER_HOME/bin/sonar-scanner -Dsonar.projectKey=bankapp -Dsonar.projectName=bankapp \
+                            -Dsonar.java.binaries=target'''
+                }
+            }
+        }
+        stage('code quality check') {
+            steps {
+                timeout(time: 1, unit: 'HOURS') {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
+                }
+            }
+        }
+        stage('docker build') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred') {
+                        sh 'docker build -t sunilrsonar/javamysqlapp:latest .'
+                    }   
+                }
+            }
+        }
+        stage('image scan') {
+            steps {
+                sh 'trivy image --format table -o image_report.html sunilrsonar/javamysqlapp:latest'
+            }
+        }
+        stage('docker push') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred') {
+                        sh 'docker push sunilrsonar/javamysqlapp:latest'
+                    }   
+                }
+            }
+        }
+        stage('app deploy') {
+            steps {
+                script {
+                    sh 'docker compose up -d --build'
+                }
+            }
+        }
+    }
+}
