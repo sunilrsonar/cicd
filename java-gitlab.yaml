@@ -1,0 +1,90 @@
+stages: 
+  - install_tools
+  - test
+  - security
+  - build
+  - docker
+  - deploy
+
+install_mvn_trivy_docker_kubectl:
+  stage: install_tools
+  script:
+    - sudo apt update
+    - sudo apt install openjdk-17-jdk-headless -y
+    - sudo apt install maven -y
+    - sudo apt install docker.io -y && sudo chmod 666 /var/run/docker.sock
+    - sudo apt-get install wget apt-transport-https gnupg lsb-release -y
+    - wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+    - echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
+    - sudo apt-get update -y
+    - sudo apt-get install trivy -y
+    - sudo snap install kubectl --classic
+  tags:
+    - self-hosted
+
+unit_testing:
+  stage: test
+  script:
+    - mvn test
+  tags:
+    - self-hosted
+
+trivy_fs_scan:
+  stage: security 
+  script:
+    - trivy fs --format table -o report_trivy.html .
+  tags:
+    - self-hosted
+
+sonarqube-check:
+  stage: security
+  image: 
+    name: sonarsource/sonar-scanner-cli:latest
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"  # Defines the location of the analysis task cache
+    GIT_DEPTH: "0"  # Tells git to fetch all the branches of the project, required by the analysis task
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  script: 
+    - sonar-scanner
+  allow_failure: true
+  only:
+    - main
+
+build_app:
+  stage: build 
+  script:
+    - mvn package 
+  tags:
+    - self-hosted
+  only: 
+    - main
+
+build_docker_image_and_push:
+  stage: docker 
+  script:
+    - docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD
+    - mvn package
+    - docker build -t $DOCKER_USERNAME/boardgame:latest .
+    - docker push $DOCKER_USERNAME/boardgame:latest
+  tags:
+    - self-hosted
+  only:
+    - main
+
+k8s_deploy:
+  stage: deploy
+  variables:
+    KUBECONFIG_PATH: /home/aizen-sosuke/.kube/config
+  before_script:
+    - mkdir -p $(dirname "$KUBECONFIG_PATH")
+    - echo "$KUBECONFIG_CONTECT" | base64 -d > "$KUBECONFIG_PATH"
+    - export KUBECONFIG="$KUBECONFIG_PATH"
+  script:
+    - kubectl apply -f deployment-service.yaml
+  tags:
+    - self-hosted
+  only:
+    - main
